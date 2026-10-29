@@ -558,8 +558,8 @@ test_json_escapes_strings :: proc(t: ^testing.T) {
 	fixture_init(&f, t, json = true)
 	defer fixture_destroy(&f)
 
-	slog.info(&f.logger, "a\"b\\c\nd", "ctl", "\x01\t\r", "sep", "x y")
-	testing.expect_value(t, take(&f), `{"level":"INFO","msg":"a\"b\\c\nd","ctl":"\u0001\t\r","sep":"x y"}` + "\n")
+	slog.info(&f.logger, "a\"b\\c\nd", "ctl", "\x01\t\r", "sep", "x\xe2\x80\xa8y")
+	testing.expect_value(t, take(&f), `{"level":"INFO","msg":"a\"b\\c\nd","ctl":"\u0001\t\r","sep":"x` + BACKSLASH + `u2028y"}` + "\n")
 }
 
 @(test)
@@ -1125,3 +1125,19 @@ test_concurrent_logging_keeps_lines_whole :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, lines, THREADS * LINES)
 }
+
+// ---- Regressions ----
+
+@(test)
+test_json_escapes_line_and_paragraph_separators :: proc(t: ^testing.T) {
+	f: Fixture
+	fixture_init(&f, t, json = true)
+	defer fixture_destroy(&f)
+
+	// U+2028 and U+2029 are valid in JSON but end a line in JavaScript, so Go escapes them.
+	slog.info(&f.logger, "a\xe2\x80\xa8b", "k", "c\xe2\x80\xa9d")
+	testing.expect_value(t, take(&f), `{"level":"INFO","msg":"a` + BACKSLASH + `u2028b","k":"c` + BACKSLASH + `u2029d"}` + "\n")
+}
+
+// BACKSLASH spells escapes like u2028 without writing them literally.
+BACKSLASH :: "\x5c"

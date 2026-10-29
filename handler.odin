@@ -557,9 +557,9 @@ json_write_string :: proc(b: ^strings.Builder, str: string) {
 			case r == utf8.RUNE_ERROR && size == 1:
 				strings.write_string(b, `�`)
 			case r == 0x2028:
-				strings.write_string(b, ` `)
+				strings.write_string(b, "\x5cu2028")
 			case r == 0x2029:
-				strings.write_string(b, ` `)
+				strings.write_string(b, "\x5cu2029")
 			case:
 				strings.write_string(b, str[i:i + size])
 			}
