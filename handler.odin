@@ -96,8 +96,10 @@ Stream_State :: struct {
 /*
 text_handler_init prepares `h` to write text records to `w`.
 
-`allocator` backs the handler's reusable line buffer. Call
-text_handler_destroy when every logger that uses the handler is done.
+`allocator` backs the handler's reusable line buffer. If it fails while a
+record is formatted, the log call returns the allocator error and writes
+nothing, so a partial line never reaches `w`. Call text_handler_destroy when
+every logger that uses the handler is done.
 */
 text_handler_init :: proc(h: ^Text_Handler, w: io.Writer, options := Handler_Options{}, allocator := context.allocator) {
 	stream_init(&h.state, w, options, false, allocator)
@@ -116,8 +118,10 @@ text_handler :: proc(h: ^Text_Handler) -> Handler {
 /*
 json_handler_init prepares `h` to write JSON records to `w`.
 
-`allocator` backs the handler's reusable line buffer. Call
-json_handler_destroy when every logger that uses the handler is done.
+`allocator` backs the handler's reusable line buffer. If it fails while a
+record is formatted, the log call returns the allocator error and writes
+nothing. Call json_handler_destroy when every logger that uses the handler is
+done.
 */
 json_handler_init :: proc(h: ^JSON_Handler, w: io.Writer, options := Handler_Options{}, allocator := context.allocator) {
 	stream_init(&h.state, w, options, true, allocator)
@@ -428,40 +432,40 @@ json_record :: proc(s: ^Stream_State, r: ^Record) {
 	for a in builtins[:n] {
 		json_attr(s, a)
 	}
-	opened := 0
-	for scope, i in r.scopes {
-		if scope.group != "" {
-			if !scopes_have_output(r, i) {
-				break
-			}
-			json_open_group(s, scope.group)
-			opened += 1
-		}
-		for a in scope.attrs {
-			json_attr(s, a)
-		}
-	}
-	// When a trailing group was skipped, the call attributes belong to it and
-	// are empty too, so writing them below is a no-op.
-	for a in r.attrs {
-		json_attr(s, a)
-	}
-	for _ in 0 ..< opened {
-		strings.write_byte(&s.line, '}')
-	}
+	json_scopes(s, r, 0)
 	clear(&s.groups)
 	strings.write_byte(&s.line, '}')
 }
 
-// scopes_have_output reports whether scope `from` or anything after it writes an attribute.
+/*
+json_scopes writes scope `i` and everything inside it: later scopes and then
+the call attributes. A scope group that ends up writing nothing, for example
+because replace_attr dropped every member, is removed again, as in Go.
+*/
 @(private)
-scopes_have_output :: proc(r: ^Record, from: int) -> bool {
-	for scope in r.scopes[from:] {
-		if attrs_have_output(scope.attrs) {
-			return true
+json_scopes :: proc(s: ^Stream_State, r: ^Record, i: int) {
+	if i == len(r.scopes) {
+		for a in r.attrs {
+			json_attr(s, a)
 		}
+		return
 	}
-	return attrs_have_output(r.attrs)
+	scope := r.scopes[i]
+	if scope.group == "" {
+		for a in scope.attrs {
+			json_attr(s, a)
+		}
+		json_scopes(s, r, i + 1)
+		return
+	}
+	start := len(s.line.buf)
+	json_open_group(s, scope.group)
+	body := len(s.line.buf)
+	for a in scope.attrs {
+		json_attr(s, a)
+	}
+	json_scopes(s, r, i + 1)
+	json_close_group(s, start, body)
 }
 
 @(private)
@@ -479,6 +483,17 @@ json_open_group :: proc(s: ^Stream_State, name: string) {
 	append(&s.groups, name)
 }
 
+// json_close_group closes the group opened at `start`, or removes it when nothing was written after `body`.
+@(private)
+json_close_group :: proc(s: ^Stream_State, start, body: int) {
+	pop(&s.groups)
+	if len(s.line.buf) == body {
+		resize(&s.line.buf, start)
+	} else {
+		strings.write_byte(&s.line, '}')
+	}
+}
+
 @(private)
 json_attr :: proc(s: ^Stream_State, attr: Attr) {
 	a, keep := replace(s, attr)
@@ -486,16 +501,19 @@ json_attr :: proc(s: ^Stream_State, attr: Attr) {
 		return
 	}
 	if g, is_group := a.value.([]Attr); is_group {
-		if a.key != "" {
-			json_open_group(s, a.key)
+		if a.key == "" {
+			for member in g {
+				json_attr(s, member)
+			}
+			return
 		}
+		start := len(s.line.buf)
+		json_open_group(s, a.key)
+		body := len(s.line.buf)
 		for member in g {
 			json_attr(s, member)
 		}
-		if a.key != "" {
-			pop(&s.groups)
-			strings.write_byte(&s.line, '}')
-		}
+		json_close_group(s, start, body)
 		return
 	}
 	json_separator(&s.line)

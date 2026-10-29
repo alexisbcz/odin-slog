@@ -1152,3 +1152,45 @@ test_text_positive_infinity_keeps_sign :: proc(t: ^testing.T) {
 
 // BACKSLASH spells escapes like u2028 without writing them literally.
 BACKSLASH :: "\x5c"
+
+drop_secret :: proc(groups: []string, a: slog.Attr, _: rawptr) -> (slog.Attr, bool) {
+	return a, a.key != "secret"
+}
+
+@(test)
+test_json_omits_group_emptied_by_replace_attr :: proc(t: ^testing.T) {
+	f: Fixture
+	fixture_init(&f, t, json = true, options = {omit_time = true, replace_attr = drop_secret})
+	defer fixture_destroy(&f)
+
+	slog.info(&f.logger, "m", slog.group("auth", {slog.attr("secret", "x")}), "after", 1)
+	testing.expect_value(t, take(&f), `{"level":"INFO","msg":"m","after":1}` + "\n")
+	slog.info(&f.logger, "m", slog.group("outer", {slog.group("auth", {slog.attr("secret", "x")})}))
+	testing.expect_value(t, take(&f), `{"level":"INFO","msg":"m"}` + "\n")
+}
+
+@(test)
+test_json_omits_logger_group_emptied_by_replace_attr :: proc(t: ^testing.T) {
+	f: Fixture
+	fixture_init(&f, t, json = true, options = {omit_time = true, replace_attr = drop_secret})
+	defer fixture_destroy(&f)
+
+	g, err := slog.logger_with_group(&f.logger, "g", f.alloc)
+	testing.expect_value(t, err, nil)
+	defer slog.logger_destroy(&g)
+	slog.info(&g, "m", "secret", "x")
+	testing.expect_value(t, take(&f), `{"level":"INFO","msg":"m"}` + "\n")
+
+	// A bound attribute that is dropped leaves the inner group in place.
+	b, berr := slog.logger_with(&g, "secret", "y", allocator = f.alloc)
+	testing.expect_value(t, berr, nil)
+	defer slog.logger_destroy(&b)
+	h, herr := slog.logger_with_group(&b, "h", f.alloc)
+	testing.expect_value(t, herr, nil)
+	defer slog.logger_destroy(&h)
+	slog.info(&h, "m", "c", 3)
+	testing.expect_value(t, take(&f), `{"level":"INFO","msg":"m","g":{"h":{"c":3}}}` + "\n")
+	slog.info(&h, "m", "secret", "z")
+	testing.expect_value(t, take(&f), `{"level":"INFO","msg":"m"}` + "\n")
+}
+
