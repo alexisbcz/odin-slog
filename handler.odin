@@ -91,6 +91,8 @@ Stream_State :: struct {
 	line:      strings.Builder,
 	scratch:   strings.Builder,
 	groups:    [dynamic]string,
+	// alloc_err records the first allocation failure while formatting a record.
+	alloc_err: runtime.Allocator_Error,
 }
 
 /*
@@ -144,9 +146,36 @@ stream_init :: proc(s: ^Stream_State, w: io.Writer, options: Handler_Options, js
 	s.options = options
 	s.json = json
 	s.allocator = allocator
-	s.line = strings.builder_make_none(allocator)
-	s.scratch = strings.builder_make_none(allocator)
-	s.groups = make([dynamic]string, allocator)
+	// The buffers allocate through a wrapper that remembers failures, because
+	// strings.Builder drops bytes silently when an append cannot grow it.
+	tracked := runtime.Allocator{stream_allocator_proc, s}
+	s.line = strings.builder_make_none(tracked)
+	s.scratch = strings.builder_make_none(tracked)
+	s.groups = make([dynamic]string, tracked)
+}
+
+@(private)
+stream_allocator_proc :: proc(
+	data: rawptr,
+	mode: runtime.Allocator_Mode,
+	size, alignment: int,
+	old_memory: rawptr,
+	old_size: int,
+	loc := #caller_location,
+) -> ([]byte, runtime.Allocator_Error) {
+	s := (^Stream_State)(data)
+	memory, err := s.allocator.procedure(s.allocator.data, mode, size, alignment, old_memory, old_size, loc)
+	if err != nil && err != .Mode_Not_Implemented && s.alloc_err == nil {
+		s.alloc_err = err
+	}
+	return memory, err
+}
+
+// push_group adds a group name and reports whether it was added, so that a failed append is never popped.
+@(private)
+push_group :: proc(s: ^Stream_State, name: string) -> bool {
+	n, _ := append(&s.groups, name)
+	return n == 1
 }
 
 @(private)
@@ -174,12 +203,17 @@ stream_handle :: proc(data: rawptr, r: ^Record) -> Error {
 
 	strings.builder_reset(&s.line)
 	clear(&s.groups)
+	s.alloc_err = nil
 	if s.json {
 		json_record(s, r)
 	} else {
 		text_record(s, r)
 	}
 	strings.write_byte(&s.line, '\n')
+	if s.alloc_err != nil {
+		// The line is missing bytes; writing it would produce corrupt output.
+		return s.alloc_err
+	}
 
 	out := s.line.buf[:]
 	n, err := io.write(s.writer, out)
@@ -257,7 +291,7 @@ text_record :: proc(s: ^Stream_State, r: ^Record) {
 	}
 	for scope in r.scopes {
 		if scope.group != "" {
-			append(&s.groups, scope.group)
+			push_group(s, scope.group)
 		}
 		for a in scope.attrs {
 			text_attr(s, a)
@@ -275,13 +309,11 @@ text_attr :: proc(s: ^Stream_State, attr: Attr) {
 		return
 	}
 	if g, is_group := a.value.([]Attr); is_group {
-		if a.key != "" {
-			append(&s.groups, a.key)
-		}
+		pushed := a.key != "" && push_group(s, a.key)
 		for member in g {
 			text_attr(s, member)
 		}
-		if a.key != "" {
+		if pushed {
 			pop(&s.groups)
 		}
 		return
@@ -459,13 +491,13 @@ json_scopes :: proc(s: ^Stream_State, r: ^Record, i: int) {
 		return
 	}
 	start := len(s.line.buf)
-	json_open_group(s, scope.group)
+	pushed := json_open_group(s, scope.group)
 	body := len(s.line.buf)
 	for a in scope.attrs {
 		json_attr(s, a)
 	}
 	json_scopes(s, r, i + 1)
-	json_close_group(s, start, body)
+	json_close_group(s, start, body, pushed)
 }
 
 @(private)
@@ -476,17 +508,19 @@ json_separator :: proc(b: ^strings.Builder) {
 }
 
 @(private)
-json_open_group :: proc(s: ^Stream_State, name: string) {
+json_open_group :: proc(s: ^Stream_State, name: string) -> (pushed: bool) {
 	json_separator(&s.line)
 	json_write_string(&s.line, name)
 	strings.write_string(&s.line, ":{")
-	append(&s.groups, name)
+	return push_group(s, name)
 }
 
 // json_close_group closes the group opened at `start`, or removes it when nothing was written after `body`.
 @(private)
-json_close_group :: proc(s: ^Stream_State, start, body: int) {
-	pop(&s.groups)
+json_close_group :: proc(s: ^Stream_State, start, body: int, pushed: bool) {
+	if pushed {
+		pop(&s.groups)
+	}
 	if len(s.line.buf) == body {
 		resize(&s.line.buf, start)
 	} else {
@@ -508,12 +542,12 @@ json_attr :: proc(s: ^Stream_State, attr: Attr) {
 			return
 		}
 		start := len(s.line.buf)
-		json_open_group(s, a.key)
+		pushed := json_open_group(s, a.key)
 		body := len(s.line.buf)
 		for member in g {
 			json_attr(s, member)
 		}
-		json_close_group(s, start, body)
+		json_close_group(s, start, body, pushed)
 		return
 	}
 	json_separator(&s.line)

@@ -128,7 +128,7 @@ odin run examples/basic
 ## Design notes
 
 - Every allocating procedure takes `allocator := context.allocator` and says who owns the result. Log calls with up to 16 arguments don't allocate, apart from the handler's reusable line buffer.
-- Fallible procedures return `Error`. A failed write comes back from the log call as an `io.Error`. The library never panics on bad input.
+- Fallible procedures return `Error`. A failed write comes back from the log call as an `io.Error`. If the handler can't grow its line buffer, the call returns the allocator error and writes nothing, so a partial line never reaches the writer. The library never panics on bad input.
 - The text format and the JSON format follow Go's `TextHandler` and `JSONHandler`. Times are UTC with millisecond precision. JSON durations are integer nanoseconds.
 - A `Logger` is read-only once made, and the built-in handlers serialize writes with a mutex, so several threads may share one logger. Each record reaches the writer in a single write call.
 - The package keeps no global mutable state. Change the level at run time with a `Level_Var`, which uses atomic loads and stores.

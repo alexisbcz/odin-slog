@@ -1194,3 +1194,46 @@ test_json_omits_logger_group_emptied_by_replace_attr :: proc(t: ^testing.T) {
 	testing.expect_value(t, take(&f), `{"level":"INFO","msg":"m"}` + "\n")
 }
 
+// handler_oom_case logs one grouped record through a handler whose allocator fails after `remaining` allocations.
+handler_oom_case :: proc(t: ^testing.T, json: bool, remaining: int) -> (line: string, err: slog.Error) {
+	fa := Failing_Allocator{context.allocator, remaining}
+	out := strings.builder_make(context.temp_allocator)
+	text: slog.Text_Handler
+	jh: slog.JSON_Handler
+	logger: slog.Logger
+	if json {
+		slog.json_handler_init(&jh, strings.to_writer(&out), NO_TIME, failing_allocator(&fa))
+		logger = slog.logger_make(slog.json_handler(&jh))
+	} else {
+		slog.text_handler_init(&text, strings.to_writer(&out), NO_TIME, failing_allocator(&fa))
+		logger = slog.logger_make(slog.text_handler(&text))
+	}
+	defer if json {
+		slog.json_handler_destroy(&jh)
+	} else {
+		slog.text_handler_destroy(&text)
+	}
+	child, cerr := slog.logger_with_group(&logger, "outer", context.allocator)
+	testing.expect_value(t, cerr, nil)
+	defer slog.logger_destroy(&child)
+	err = slog.info(&child, "a message long enough to need several buffer growths", "k", "v", slog.group("inner", {slog.attr("n", 1)}))
+	return strings.to_string(out), err
+}
+
+@(test)
+test_handler_allocator_failure_is_reported_not_truncated :: proc(t: ^testing.T) {
+	for json in ([]bool{false, true}) {
+		full, ferr := handler_oom_case(t, json, 1000)
+		testing.expect_value(t, ferr, nil)
+		testing.expect(t, strings.has_suffix(full, "\n"))
+		for remaining in 0 ..< 12 {
+			got, err := handler_oom_case(t, json, remaining)
+			if err == nil {
+				testing.expectf(t, got == full, "json=%v remaining=%d wrote %q, want %q", json, remaining, got, full)
+			} else {
+				testing.expect_value(t, err, slog.Error(runtime.Allocator_Error.Out_Of_Memory))
+				testing.expectf(t, got == "", "json=%v remaining=%d wrote a partial line %q", json, remaining, got)
+			}
+		}
+	}
+}

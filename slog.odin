@@ -66,7 +66,9 @@ package. `nil` means success.
 
 - Level_Error comes from level_parse.
 - io.Error comes from the writer that a handler writes to.
-- runtime.Allocator_Error comes from binding attributes or groups to a child logger.
+- runtime.Allocator_Error comes from binding attributes or groups to a child logger,
+  or from a handler that could not grow its line buffer. A handler that
+  returns it writes nothing for that record.
 */
 Error :: union #shared_nil {
 	Level_Error,
