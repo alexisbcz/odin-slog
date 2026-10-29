@@ -598,7 +598,8 @@ json_write_string :: proc(b: ^strings.Builder, str: string) {
 write_float :: proc(b: ^strings.Builder, f: f64) {
 	buf: [64]byte
 	str := strconv.write_float(buf[:], f, 'g', -1, 64)
-	if len(str) > 0 && str[0] == '+' {
+	// strconv writes a sign on every number; Go keeps it only for +Inf.
+	if len(str) > 1 && str[0] == '+' && str[1] != 'I' {
 		str = str[1:]
 	}
 	strings.write_string(b, str)

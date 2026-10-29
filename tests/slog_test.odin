@@ -1139,5 +1139,16 @@ test_json_escapes_line_and_paragraph_separators :: proc(t: ^testing.T) {
 	testing.expect_value(t, take(&f), `{"level":"INFO","msg":"a` + BACKSLASH + `u2028b","k":"c` + BACKSLASH + `u2029d"}` + "\n")
 }
 
+@(test)
+test_text_positive_infinity_keeps_sign :: proc(t: ^testing.T) {
+	f: Fixture
+	fixture_init(&f, t)
+	defer fixture_destroy(&f)
+
+	// Go's TextHandler uses strconv.FormatFloat, which writes +Inf.
+	slog.info(&f.logger, "m", "pos", math.inf_f64(1), "neg", math.inf_f64(-1), "nan", math.nan_f64(), "x", 2.5)
+	testing.expect_value(t, take(&f), "level=INFO msg=m pos=+Inf neg=-Inf nan=NaN x=2.5\n")
+}
+
 // BACKSLASH spells escapes like u2028 without writing them literally.
 BACKSLASH :: "\x5c"
