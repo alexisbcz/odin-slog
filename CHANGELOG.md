@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-29
+
+### Fixed
+
+- `JSON_Handler` now escapes U+2028 and U+2029 as `\u2028` and `\u2029`, as Go does. Before, it wrote the raw characters, which break JavaScript consumers that embed the line.
+- `Text_Handler` writes positive infinity as `+Inf`, like Go, instead of `Inf`.
+- `JSON_Handler` leaves out a group, bound or inline, when `replace_attr` drops every member, instead of writing `"group":{}`.
+- A handler whose allocator fails while formatting no longer panics on nested groups or writes a truncated line. The log call returns `runtime.Allocator_Error` and writes nothing.
+
 ## [0.1.0] - 2026-10-29
 
 ### Added
@@ -18,5 +27,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `runtime_logger`, which adapts a `Logger` to `runtime.Logger` for `context.logger` and `core:log`.
 - `Handler` interface for custom back ends, plus `discard_handler`.
 
-[Unreleased]: https://github.com/alexisbcz/odin-slog/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/alexisbcz/odin-slog/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/alexisbcz/odin-slog/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/alexisbcz/odin-slog/releases/tag/v0.1.0
